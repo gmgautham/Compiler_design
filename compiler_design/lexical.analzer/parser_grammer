@@ -1,0 +1,11 @@
+program        → statement*
+
+statement      → declaration | print_stmt
+
+declaration    → 'int' IDENTIFIER '=' expression ';'
+
+print_stmt     → 'likho' '(' expression ')' ';'
+
+expression     → term (('+' | '-') term)*
+
+term           → NUMBER | IDENTIFIER
