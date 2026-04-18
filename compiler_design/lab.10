@@ -1,0 +1,192 @@
+#ifndef EXPRESSION_CODEGEN_HPP
+#define EXPRESSION_CODEGEN_HPP
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <memory>
+#include <stack>
+#include <cmath>
+#include <algorithm>
+
+/**
+ * Token types and representation
+ */
+enum class TokenType {
+    NUMBER, PLUS, MINUS, MULTIPLY, DIVIDE, POWER, LPAREN, RPAREN, EOF_TYPE
+};
+
+struct Token {
+    TokenType type;
+    std::string value;
+
+    Token(TokenType t, std::string v = "") : type(t), value(v) {}
+};
+
+/**
+ * AST Node for expressions
+ */
+struct ExprNode {
+    std::string type; // "number" or "op"
+    std::string value;
+    std::shared_ptr<ExprNode> left;
+    std::shared_ptr<ExprNode> right;
+
+    ExprNode(std::string t, std::string v, std::shared_ptr<ExprNode> l = nullptr, std::shared_ptr<ExprNode> r = nullptr)
+        : type(t), value(v), left(l), right(r) {}
+};
+
+/**
+ * Lexer: Tokenizes mathematical expressions
+ */
+class Lexer {
+private:
+    std::string expression;
+    size_t pos = 0;
+
+public:
+    Lexer(std::string expr) : expression(expr) {}
+
+    std::vector<Token> tokenize() {
+        std::vector<Token> tokens;
+        while (pos < expression.length()) {
+            char char_at = expression[pos];
+
+            if (std::isspace(char_at)) {
+                pos++;
+            } else if (std::isdigit(char_at)) {
+                std::string num;
+                while (pos < expression.length() && std::isdigit(expression[pos])) {
+                    num += expression[pos++];
+                }
+                tokens.push_back(Token(TokenType::NUMBER, num));
+            } else if (char_at == '+') { tokens.push_back(Token(TokenType::PLUS, "+")); pos++; }
+            else if (char_at == '-') { tokens.push_back(Token(TokenType::MINUS, "-")); pos++; }
+            else if (char_at == '*') { tokens.push_back(Token(TokenType::MULTIPLY, "*")); pos++; }
+            else if (char_at == '/') { tokens.push_back(Token(TokenType::DIVIDE, "/")); pos++; }
+            else if (char_at == '^') { tokens.push_back(Token(TokenType::POWER, "^")); pos++; }
+            else if (char_at == '(') { tokens.push_back(Token(TokenType::LPAREN, "(")); pos++; }
+            else if (char_at == ')') { tokens.push_back(Token(TokenType::RPAREN, ")")); pos++; }
+            else { pos++; } // Ignore unknown
+        }
+        tokens.push_back(Token(TokenType::EOF_TYPE, ""));
+        return tokens;
+    }
+};
+
+/**
+ * Parser: Builds AST using Recursive Descent
+ */
+class ExpressionParser {
+private:
+    std::vector<Token> tokens;
+    size_t pos = 0;
+
+    Token current_token() {
+        if (pos < tokens.size()) return tokens[pos];
+        return Token(TokenType::EOF_TYPE);
+    }
+
+    void consume() { pos++; }
+
+public:
+    ExpressionParser(std::vector<Token> t) : tokens(t) {}
+
+    std::shared_ptr<ExprNode> parse() { return parse_expression(); }
+
+    std::shared_ptr<ExprNode> parse_expression() {
+        auto left = parse_term();
+        while (current_token().type == TokenType::PLUS || current_token().type == TokenType::MINUS) {
+            std::string op = current_token().value;
+            consume();
+            auto right = parse_term();
+            left = std::make_shared<ExprNode>("op", op, left, right);
+        }
+        return left;
+    }
+
+    std::shared_ptr<ExprNode> parse_term() {
+        auto left = parse_power();
+        while (current_token().type == TokenType::MULTIPLY || current_token().type == TokenType::DIVIDE) {
+            std::string op = current_token().value;
+            consume();
+            auto right = parse_power();
+            left = std::make_shared<ExprNode>("op", op, left, right);
+        }
+        return left;
+    }
+
+    std::shared_ptr<ExprNode> parse_power() {
+        auto left = parse_factor();
+        while (current_token().type == TokenType::POWER) {
+            std::string op = current_token().value;
+            consume();
+            auto right = parse_factor();
+            left = std::make_shared<ExprNode>("op", op, left, right);
+        }
+        return left;
+    }
+
+    std::shared_ptr<ExprNode> parse_factor() {
+        Token token = current_token();
+        if (token.type == TokenType::NUMBER) {
+            consume();
+            return std::make_shared<ExprNode>("number", token.value);
+        } else if (token.type == TokenType::LPAREN) {
+            consume();
+            auto expr = parse_expression();
+            consume(); // consume ')'
+            return expr;
+        } else if (token.type == TokenType::MINUS) {
+            consume();
+            auto operand = parse_factor();
+            return std::make_shared<ExprNode>("op", "-", std::make_shared<ExprNode>("number", "0"), operand);
+        }
+        throw std::runtime_error("Unexpected token");
+    }
+};
+
+/**
+ * Code Generator: AST Traversal for Postfix and Prefix
+ */
+class IntermediateCodeGenerator {
+public:
+    static std::vector<std::string> generate_postfix(std::shared_ptr<ExprNode> ast) {
+        if (ast->type == "number") return {ast->value};
+        auto left = generate_postfix(ast->left);
+        auto right = generate_postfix(ast->right);
+        left.insert(left.end(), right.begin(), right.end());
+        left.push_back(ast->value);
+        return left;
+    }
+
+    static std::vector<std::string> generate_prefix(std::shared_ptr<ExprNode> ast) {
+        if (ast->type == "number") return {ast->value};
+        std::vector<std::string> res = {ast->value};
+        auto left = generate_prefix(ast->left);
+        auto right = generate_prefix(ast->right);
+        res.insert(res.end(), left.begin(), left.end());
+        res.insert(res.end(), right.begin(), right.end());
+        return res;
+    }
+
+    static double evaluate_postfix(const std::vector<std::string>& postfix) {
+        std::stack<double> s;
+        for (const auto& item : postfix) {
+            if (std::isdigit(item[0]) || (item.length() > 1 && std::isdigit(item[1]))) {
+                s.push(std::stod(item));
+            } else {
+                double r = s.top(); s.pop();
+                double l = s.top(); s.pop();
+                if (item == "+") s.push(l + r);
+                else if (item == "-") s.push(l - r);
+                else if (item == "*") s.push(l * r);
+                else if (item == "/") s.push(l / r);
+                else if (item == "^") s.push(std::pow(l, r));
+            }
+        }
+        return s.top();
+    }
+};
+
+#endif
