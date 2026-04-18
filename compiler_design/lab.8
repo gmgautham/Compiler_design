@@ -1,0 +1,212 @@
+#ifndef LEADING_TRAILING_HPP
+#define LEADING_TRAILING_HPP
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <set>
+#include <map>
+#include <algorithm>
+
+/**
+ * Represents a grammar rule: A -> X1 X2 ... Xn
+ */
+struct GrammarRule {
+    std::string lhs;
+    std::vector<std::string> rhs;
+
+    std::string toString() const {
+        std::string res = lhs + " -> ";
+        for (const auto& sym : rhs) res += sym + " ";
+        return res;
+    }
+};
+
+/**
+ * Represents a context-free grammar
+ */
+class Grammar {
+public:
+    std::vector<GrammarRule> rules;
+    std::set<std::string> non_terminals;
+    std::set<std::string> terminals;
+    std::string start_symbol;
+
+    void add_rule(std::string lhs, std::vector<std::string> rhs) {
+        rules.push_back({lhs, rhs});
+        non_terminals.insert(lhs);
+
+        for (const auto& symbol : rhs) {
+            if (symbol == "ε") continue;
+            
+            // Logic: Uppercase strings are Non-Terminals, others are Terminals
+            bool isUpper = !symbol.empty() && std::isupper(static_cast<unsigned char>(symbol[0]));
+            if (isUpper) {
+                non_terminals.insert(symbol);
+            } else {
+                terminals.insert(symbol);
+            }
+        }
+
+        if (start_symbol.empty()) {
+            start_symbol = lhs;
+        }
+    }
+
+    bool is_terminal(const std::string& symbol) const {
+        return terminals.count(symbol) || symbol == "$";
+    }
+
+    bool is_non_terminal(const std::string& symbol) const {
+        return non_terminals.count(symbol);
+    }
+};
+
+/**
+ * Computes LEADING and TRAILING sets
+ */
+class LeadingTrailingComputer {
+private:
+    Grammar& grammar;
+    std::map<std::string, std::set<std::string>> leading;
+    std::map<std::string, std::set<std::string>> trailing;
+    std::map<std::string, bool> nullable;
+
+    bool can_derive_epsilon(const std::string& symbol) {
+        if (grammar.is_terminal(symbol)) return false;
+        return nullable[symbol];
+    }
+
+public:
+    LeadingTrailingComputer(Grammar& g) : grammar(g) {}
+
+    void compute_nullable() {
+        for (const auto& nt : grammar.non_terminals) nullable[nt] = false;
+
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (const auto& rule : grammar.rules) {
+                if (nullable[rule.lhs]) continue;
+
+                bool rhs_nullable = false;
+                if (rule.rhs.size() == 1 && rule.rhs[0] == "ε") {
+                    rhs_nullable = true;
+                } else {
+                    rhs_nullable = true;
+                    for (const auto& sym : rule.rhs) {
+                        if (!nullable[sym]) {
+                            rhs_nullable = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (rhs_nullable) {
+                    nullable[rule.lhs] = true;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    void compute_leading() {
+        // Initialize: LEADING(a) = {a} for terminals
+        for (const auto& t : grammar.terminals) {
+            leading[t] = {t};
+        }
+        for (const auto& nt : grammar.non_terminals) {
+            leading[nt] = {};
+        }
+
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (const auto& rule : grammar.rules) {
+                for (const auto& symbol : rule.rhs) {
+                    if (symbol == "ε") continue;
+
+                    size_t before = leading[rule.lhs].size();
+                    const auto& sym_leading = leading[symbol];
+                    leading[rule.lhs].insert(sym_leading.begin(), sym_leading.end());
+
+                    if (leading[rule.lhs].size() > before) changed = true;
+
+                    if (!can_derive_epsilon(symbol)) break;
+                }
+            }
+        }
+    }
+
+    void compute_trailing() {
+        compute_nullable();
+        for (const auto& nt : grammar.non_terminals) trailing[nt] = {};
+        
+        if (!grammar.start_symbol.empty()) {
+            trailing[grammar.start_symbol].insert("$");
+        }
+
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (const auto& rule : grammar.rules) {
+                std::string lhs = rule.lhs;
+
+                // Process right to left
+                for (int i = rule.rhs.size() - 1; i >= 0; --i) {
+                    std::string symbol = rule.rhs[i];
+                    if (!grammar.is_non_terminal(symbol)) continue;
+
+                    size_t before = trailing[symbol].size();
+
+                    // TRAILING(symbol) union= TRAILING(lhs)
+                    trailing[symbol].insert(trailing[lhs].begin(), trailing[lhs].end());
+
+                    // Add terminals that can follow
+                    if (i < (int)rule.rhs.size() - 1) {
+                        std::string next_symbol = rule.rhs[i + 1];
+                        if (grammar.is_terminal(next_symbol)) {
+                            trailing[symbol].insert(next_symbol);
+                        } else {
+                            // Add LEADING of next
+                            const auto& next_leading = leading[next_symbol];
+                            trailing[symbol].insert(next_leading.begin(), next_leading.end());
+
+                            // If next can derive empty, look further
+                            if (can_derive_epsilon(next_symbol) && i + 1 < (int)rule.rhs.size() - 1) {
+                                std::string next_next = rule.rhs[i + 2];
+                                if (grammar.is_terminal(next_next)) {
+                                    trailing[symbol].insert(next_next);
+                                }
+                            }
+                        }
+                    }
+
+                    if (trailing[symbol].size() > before) changed = true;
+                }
+            }
+        }
+    }
+
+    void print_sets() const {
+        std::cout << "\n" << std::string(30, '=') << "\nLEADING SETS\n" << std::string(30, '=') << "\n";
+        for (const auto& pair : leading) {
+            if (grammar.is_non_terminal(pair.first)) {
+                std::cout << "LEADING(" << pair.first << ") = { ";
+                for (const auto& s : pair.second) std::cout << s << " ";
+                std::cout << "}\n";
+            }
+        }
+
+        std::cout << "\n" << std::string(30, '=') << "\nTRAILING SETS\n" << std::string(30, '=') << "\n";
+        for (const auto& pair : trailing) {
+            if (grammar.is_non_terminal(pair.first)) {
+                std::cout << "TRAILING(" << pair.first << ") = { ";
+                for (const auto& s : pair.second) std::cout << s << " ";
+                std::cout << "}\n";
+            }
+        }
+    }
+};
+
+#endif
