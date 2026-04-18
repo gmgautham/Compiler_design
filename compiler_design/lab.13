@@ -1,0 +1,143 @@
+#ifndef DAG_OPTIMIZER_HPP
+#define DAG_OPTIMIZER_HPP
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <map>
+#include <set>
+#include <memory>
+#include <algorithm>
+#include <tuple>
+
+/**
+ * Represents a node in the Directed Acyclic Graph
+ */
+struct DAGNode {
+    int id;
+    std::string op;          // Operator (empty for leaves)
+    std::string value;       // For leaf nodes (constants/variables)
+    std::shared_ptr<DAGNode> left;
+    std::shared_ptr<DAGNode> right;
+    std::set<std::string> identifiers; // Variables that point to this node
+
+    DAGNode(int _id, std::string _val) : id(_id), value(_val), left(nullptr), right(nullptr) {}
+    DAGNode(int _id, std::string _op, std::shared_ptr<DAGNode> l, std::shared_ptr<DAGNode> r)
+        : id(_id), op(_op), left(l), right(r) {}
+
+    bool is_leaf() const { return op.empty(); }
+
+    std::string toString() const {
+        return "N" + std::to_string(id) + (is_leaf() ? "(" + value + ")" : "(" + op + ")");
+    }
+};
+
+/**
+ * Builds and manages the DAG for code optimization
+ */
+class DAGBuilder {
+private:
+    int node_counter = 0;
+    std::map<int, std::shared_ptr<DAGNode>> nodes;
+    std::map<std::string, std::shared_ptr<DAGNode>> label_to_node;
+    // Map to identify existing expressions: {op, left_id, right_id} -> Node
+    std::map<std::tuple<std::string, int, int>, std::shared_ptr<DAGNode>> expressions;
+
+public:
+    std::shared_ptr<DAGNode> get_or_create_leaf(std::string val) {
+        if (label_to_node.count(val)) return label_to_node[val];
+        
+        auto node = std::make_shared<DAGNode>(node_counter++, val);
+        nodes[node->id] = node;
+        label_to_node[val] = node;
+        return node;
+    }
+
+    std::shared_ptr<DAGNode> create_internal(std::string op, std::shared_ptr<DAGNode> left, std::shared_ptr<DAGNode> right = nullptr) {
+        int left_id = left->id;
+        int right_id = right ? right->id : -1;
+        auto key = std::make_tuple(op, left_id, right_id);
+
+        if (expressions.count(key)) return expressions[key];
+
+        auto node = std::make_shared<DAGNode>(node_counter++, op, left, right);
+        nodes[node->id] = node;
+        expressions[key] = node;
+        return node;
+    }
+
+    /**
+     * Build DAG from Quadruples: {op, arg1, arg2, result}
+     */
+    void build_from_quads(const std::vector<std::tuple<std::string, std::string, std::string, std::string>>& quads) {
+        for (const auto& quad : quads) {
+            std::string op, arg1, arg2, result;
+            std::tie(op, arg1, arg2, result) = quad;
+
+            std::shared_ptr<DAGNode> left = get_or_create_leaf(arg1);
+            std::shared_ptr<DAGNode> right = arg2.empty() ? nullptr : get_or_create_leaf(arg2);
+
+            std::shared_ptr<DAGNode> op_node;
+            if (op == "=") {
+                op_node = left;
+            } else {
+                op_node = create_internal(op, left, right);
+            }
+
+            if (!result.empty()) {
+                op_node->identifiers.insert(result);
+                label_to_node[result] = op_node;
+            }
+        }
+    }
+
+    void print_dag() {
+        std::cout << "\nDAG STRUCTURE\n" << std::string(30, '=') << "\n";
+        for (auto const& [id, node] : nodes) {
+            std::cout << "  " << node->toString();
+            if (!node->is_leaf()) {
+                std::cout << " = N" << node->left->id << " " << node->op;
+                if (node->right) std::cout << " N" << node->right->id;
+            } else {
+                std::cout << " = " << node->value;
+            }
+
+            if (!node->identifiers.empty()) {
+                std::cout << "  => { ";
+                for (auto const& iden : node->identifiers) std::cout << iden << " ";
+                std::cout << "}";
+            }
+            std::cout << "\n";
+        }
+    }
+
+    /**
+     * Generates optimized instructions by traversing the DAG
+     */
+    void print_optimized_code() {
+        std::cout << "\nOPTIMIZED CODE (CSE)\n" << std::string(30, '=') << "\n";
+        int temp_count = 0;
+        std::map<int, std::string> node_to_temp;
+
+        // Simple heuristic: process nodes in ID order (approximation of topological)
+        for (auto const& [id, node] : nodes) {
+            if (node->is_leaf()) continue;
+
+            std::string t = "t" + std::to_string(temp_count++);
+            node_to_temp[id] = t;
+
+            std::string op1 = node->left->is_leaf() ? node->left->value : node_to_temp[node->left->id];
+            std::string op2 = "";
+            if (node->right) {
+                op2 = node->right->is_leaf() ? node->right->value : node_to_temp[node->right->id];
+            }
+
+            std::cout << "  " << t << " = " << op1 << " " << node->op << " " << op2 << "\n";
+            for (auto const& var : node->identifiers) {
+                std::cout << "  " << var << " = " << t << "\n";
+            }
+        }
+    }
+};
+
+#endif
