@@ -1,0 +1,145 @@
+#ifndef INTERMEDIATE_CODE_GEN_HPP
+#define INTERMEDIATE_CODE_GEN_HPP
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <variant>
+#include <optional>
+#include <iomanip>
+
+/**
+ * Operator types for intermediate code
+ */
+enum class OperatorType {
+    ADD, SUB, MUL, DIV, POW, NEG, ASSIGN, LOAD, STORE, PARAM, CALL, RETURN, IF, GOTO, LABEL
+};
+
+inline std::string op_to_string(OperatorType op) {
+    switch (op) {
+        case OperatorType::ADD: return "+"; case OperatorType::SUB: return "-";
+        case OperatorType::MUL: return "*"; case OperatorType::DIV: return "/";
+        case OperatorType::ASSIGN: return "="; case OperatorType::LOAD: return "LOAD";
+        default: return "OP";
+    }
+}
+
+/**
+ * Common operand type: can be a string (variable/temp) or an int (index reference)
+ */
+using Operand = std::variant<std::monostate, std::string, int>;
+
+inline std::string operand_to_string(const Operand& op) {
+    if (std::holds_alternative<std::string>(op)) return std::get<std::string>(op);
+    if (std::holds_alternative<int>(op)) return "(" + std::to_string(std::get<int>(op)) + ")";
+    return "-";
+}
+
+/**
+ * Quadruple: (op, arg1, arg2, result)
+ */
+struct Quadruple {
+    OperatorType op;
+    Operand arg1;
+    Operand arg2;
+    Operand result;
+
+    void print(int idx) const {
+        std::cout << "  " << idx << ": (" << op_to_string(op) << ", " 
+                  << operand_to_string(arg1) << ", " 
+                  << operand_to_string(arg2) << ", " 
+                  << operand_to_string(result) << ")\n";
+    }
+};
+
+/**
+ * Triple: (op, arg1, arg2)
+ */
+struct Triple {
+    OperatorType op;
+    Operand arg1;
+    Operand arg2;
+
+    void print(int idx) const {
+        std::cout << "  " << idx << ": (" << op_to_string(op) << ", " 
+                  << operand_to_string(arg1) << ", " 
+                  << operand_to_string(arg2) << ")\n";
+    }
+};
+
+class QuadrupleGenerator {
+public:
+    std::vector<Quadruple> quads;
+    int temp_counter = 0;
+
+    std::string new_temp() { return "t" + std::to_string(temp_counter++); }
+
+    std::string emit_binary_op(OperatorType op, std::string left, std::string right) {
+        std::string res = new_temp();
+        quads.push_back({op, left, right, res});
+        return res;
+    }
+
+    void print() {
+        std::cout << "\nQUADRUPLE CODE\n" << std::string(30, '-') << "\n";
+        for (int i = 0; i < quads.size(); ++i) quads[i].print(i);
+    }
+};
+
+class TripleGenerator {
+public:
+    std::vector<Triple> triples;
+
+    int emit(OperatorType op, Operand arg1 = {}, Operand arg2 = {}) {
+        triples.push_back({op, arg1, arg2});
+        return triples.size() - 1;
+    }
+
+    void print() {
+        std::cout << "\nTRIPLE CODE\n" << std::string(30, '-') << "\n";
+        for (int i = 0; i < triples.size(); ++i) triples[i].print(i);
+    }
+};
+
+class IndirectTripleGenerator {
+public:
+    std::vector<Triple> triples;
+    std::vector<int> indirect_refs;
+
+    int emit(OperatorType op, Operand arg1 = {}, Operand arg2 = {}) {
+        int triple_idx = triples.size();
+        triples.push_back({op, arg1, arg2});
+        int ref_idx = indirect_refs.size();
+        indirect_refs.push_back(triple_idx);
+        return ref_idx;
+    }
+
+    void print() {
+        std::cout << "\nINDIRECT TRIPLE CODE\n" << std::string(30, '-') << "\n";
+        std::cout << "Indirect Refs: ";
+        for (int i = 0; i < indirect_refs.size(); ++i) std::cout << i << "->" << indirect_refs[i] << " ";
+        std::cout << "\nTriples:\n";
+        for (int i = 0; i < triples.size(); ++i) triples[i].print(i);
+    }
+};
+
+/**
+ * Simplified Expression Compiler for testing
+ */
+class ExpressionCompiler {
+public:
+    // Helper to simulate basic precedence for "a + b * c"
+    void compile(const std::string& left, const std::string& op, const std::string& mid, const std::string& op2, const std::string& right, QuadrupleGenerator& qg) {
+        if (op2 == "*") {
+            std::string t0 = qg.emit_binary_op(OperatorType::MUL, mid, right);
+            qg.emit_binary_op(OperatorType::ADD, left, t0);
+        }
+    }
+
+    void compile_triples(const std::string& left, const std::string& mid, const std::string& right, TripleGenerator& tg) {
+        int m = tg.emit(OperatorType::MUL, mid, right);
+        tg.emit(OperatorType::ADD, left, m);
+    }
+};
+
+#endif
