@@ -1,0 +1,179 @@
+#ifndef LR0_ITEMS_HPP
+#define LR0_ITEMS_HPP
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <set>
+#include <map>
+#include <tuple>
+#include <algorithm>
+
+/**
+ * Represents an LR(0) item: A -> α.β
+ */
+struct Item {
+    std::string lhs;
+    std::vector<std::string> rhs;
+    size_t dot_position;
+
+    // Necessary for std::set ordering
+    bool operator<(const Item& other) const {
+        return std::tie(lhs, rhs, dot_position) < std::tie(other.lhs, other.rhs, other.dot_position);
+    }
+
+    bool operator==(const Item& other) const {
+        return lhs == other.lhs && rhs == other.rhs && dot_position == other.dot_position;
+    }
+
+    std::string toString() const {
+        std::string res = lhs + " -> ";
+        for (size_t i = 0; i <= rhs.size(); ++i) {
+            if (i == dot_position) res += "• ";
+            if (i < rhs.size()) res += rhs[i] + " ";
+        }
+        return res;
+    }
+
+    std::string get_next_symbol() const {
+        if (dot_position < rhs.size()) return rhs[dot_position];
+        return "";
+    }
+
+    Item advance_dot() const {
+        return {lhs, rhs, dot_position + 1};
+    }
+};
+
+/**
+ * Grammar for LR(0) analysis
+ */
+class LRGrammar {
+public:
+    std::map<std::string, std::vector<std::vector<std::string>>> rules;
+    std::set<std::string> non_terminals;
+    std::set<std::string> terminals;
+    std::string start_symbol;
+    std::string augmented_start;
+
+    void add_rule(std::string lhs, std::vector<std::string> rhs) {
+        rules[lhs].push_back(rhs);
+        non_terminals.insert(lhs);
+        for (const auto& sym : rhs) {
+            if (sym != "ε" && !std::isupper(sym[0])) terminals.insert(sym);
+        }
+        if (start_symbol.empty()) start_symbol = lhs;
+    }
+
+    void augment() {
+        augmented_start = start_symbol + "'";
+        rules[augmented_start] = {{start_symbol}};
+        non_terminals.insert(augmented_start);
+    }
+
+    bool is_terminal(const std::string& symbol) const {
+        return terminals.count(symbol) || symbol == "ε";
+    }
+};
+
+/**
+ * Canonical collection of LR(0) item sets
+ */
+class LRItemSetCollection {
+private:
+    LRGrammar& grammar;
+
+public:
+    std::map<int, std::set<Item>> states;
+    std::map<std::pair<int, std::string>, int> goto_table;
+    std::map<std::set<Item>, int> item_set_to_state;
+    int state_counter = 0;
+
+    LRItemSetCollection(LRGrammar& g) : grammar(g) {}
+
+    std::set<Item> closure(std::set<Item> items) {
+        std::set<Item> closure_set = items;
+        bool added = true;
+        while (added) {
+            added = false;
+            std::set<Item> new_items;
+            for (const auto& item : closure_set) {
+                std::string next_sym = item.get_next_symbol();
+                if (!next_sym.empty() && !grammar.is_terminal(next_sym)) {
+                    for (const auto& prod : grammar.rules[next_sym]) {
+                        Item new_item = {next_sym, prod, 0};
+                        if (closure_set.find(new_item) == closure_set.end()) {
+                            new_items.insert(new_item);
+                            added = true;
+                        }
+                    }
+                }
+            }
+            closure_set.insert(new_items.begin(), new_items.end());
+        }
+        return closure_set;
+    }
+
+    std::set<Item> GOTO(const std::set<Item>& items, const std::string& symbol) {
+        std::set<Item> moved_items;
+        for (const auto& item : items) {
+            if (item.get_next_symbol() == symbol) {
+                moved_items.insert(item.advance_dot());
+            }
+        }
+        return closure(moved_items);
+    }
+
+    void build_canonical_collection() {
+        grammar.augment();
+        
+        // Initial state
+        std::set<Item> initial_items = closure({{grammar.augmented_start, {grammar.start_symbol}, 0}});
+        int start_id = state_counter++;
+        states[start_id] = initial_items;
+        item_set_to_state[initial_items] = start_id;
+
+        std::vector<int> unprocessed = {start_id};
+        while (!unprocessed.empty()) {
+            int current_state = unprocessed.back();
+            unprocessed.pop_back();
+
+            // Collect all symbols that follow a dot in this state
+            std::set<std::string> symbols;
+            for (const auto& item : states[current_state]) {
+                std::string s = item.get_next_symbol();
+                if (!s.empty()) symbols.insert(s);
+            }
+
+            for (const auto& symbol : symbols) {
+                std::set<Item> next_set = GOTO(states[current_state], symbol);
+                if (next_set.empty()) continue;
+
+                if (item_set_to_state.find(next_set) == item_set_to_state.end()) {
+                    int next_id = state_counter++;
+                    states[next_id] = next_set;
+                    item_set_to_state[next_set] = next_id;
+                    unprocessed.push_back(next_id);
+                }
+                goto_table[{current_state, symbol}] = item_set_to_state[next_set];
+            }
+        }
+    }
+
+    void print_collection() {
+        std::cout << "\n" << std::string(40, '=') << "\nLR(0) CANONICAL COLLECTION\n" << std::string(40, '=') << "\n";
+        for (auto const& [id, items] : states) {
+            std::cout << "\nState " << id << ":\n";
+            for (auto const& item : items) std::cout << "  " << item.toString() << "\n";
+            
+            std::cout << "  Transitions:\n";
+            for (auto const& [key, to_state] : goto_table) {
+                if (key.first == id) {
+                    std::cout << "    GOTO(" << id << ", " << key.second << ") -> " << to_state << "\n";
+                }
+            }
+        }
+    }
+};
+
+#endif
