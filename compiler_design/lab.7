@@ -1,0 +1,231 @@
+#ifndef SHIFT_REDUCE_PARSER_HPP
+#define SHIFT_REDUCE_PARSER_HPP
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <map>
+#include <memory>
+#include <variant>
+#include <optional>
+#include <algorithm>
+
+/**
+ * Action types for the parsing table
+ */
+enum class ActionType {
+    SHIFT,
+    REDUCE,
+    ACCEPT,
+    ERROR
+};
+
+/**
+ * Node for parse tree
+ */
+struct ParseTreeNode {
+    std::string symbol;
+    std::vector<std::shared_ptr<ParseTreeNode>> children;
+
+    ParseTreeNode(std::string sym, std::vector<std::shared_ptr<ParseTreeNode>> ch = {})
+        : symbol(std::move(sym)), children(std::move(ch)) {}
+
+    std::string toString() const {
+        if (children.empty()) return symbol;
+        std::string res = symbol + "(";
+        for (size_t i = 0; i < children.size(); ++i) {
+            res += children[i]->toString();
+            if (i < children.size() - 1) res += ", ";
+        }
+        return res + ")";
+    }
+};
+
+/**
+ * Shift-Reduce Parser implementation
+ */
+class ShiftReduceParser {
+private:
+    struct ActionEntry {
+        ActionType type;
+        int value; // state for SHIFT, rule_id for REDUCE
+    };
+
+    std::map<std::pair<int, std::string>, ActionEntry> parsing_table;
+    std::map<std::pair<int, std::string>, int> goto_table;
+    std::map<int, std::pair<std::string, std::vector<std::string>>> grammar_rules;
+    
+    // Stack holds either an int (state) or a string (symbol)
+    std::vector<std::variant<int, std::string>> stack;
+
+public:
+    void add_rule(int rule_id, std::string lhs, std::vector<std::string> rhs) {
+        grammar_rules[rule_id] = {std::move(lhs), std::move(rhs)};
+    }
+
+    void set_action(int state, std::string symbol, ActionType type, int value = -1) {
+        parsing_table[{state, symbol}] = {type, value};
+    }
+
+    void set_goto(int state, std::string non_terminal, int next_state) {
+        goto_table[{state, non_terminal}] = next_state;
+    }
+
+    std::tuple<bool, std::shared_ptr<ParseTreeNode>, std::vector<std::string>> 
+    parse(std::vector<std::string> tokens) {
+        stack.clear();
+        stack.push_back(0); // Initial state
+        
+        std::vector<std::string> input_buffer = tokens;
+        input_buffer.push_back("$");
+        
+        std::vector<std::string> actions_log;
+        size_t token_index = 0;
+
+        while (true) {
+            int current_state = std::get<int>(stack.back());
+            std::string current_token = input_buffer[token_index];
+
+            auto action_it = parsing_table.find({current_state, current_token});
+            if (action_it == parsing_table.end()) {
+                actions_log.push_back("ERROR at state " + std::to_string(current_state) + ", token '" + current_token + "'");
+                return {false, nullptr, actions_log};
+            }
+
+            ActionEntry entry = action_it->second;
+
+            if (entry.type == ActionType.SHIFT) {
+                actions_log.push_back("Shift '" + current_token + "' to state " + std::to_string(entry.value));
+                stack.push_back(current_token);
+                stack.push_back(entry.value);
+                token_index++;
+            }
+            else if (entry.type == ActionType.REDUCE) {
+                int rule_id = entry.value;
+                auto& [lhs, rhs] = grammar_rules[rule_id];
+
+                std::string rule_str = lhs + " -> ";
+                for (const auto& s : rhs) rule_str += s + " ";
+                actions_log.push_back("Reduce by rule " + std::to_string(rule_id) + ": " + rule_str);
+
+                // Pop 2 * length of RHS (state + symbol pairs)
+                for (size_t i = 0; i < rhs.size(); ++i) {
+                    stack.pop_back(); // Pop state
+                    stack.pop_back(); // Pop symbol
+                }
+
+                int prev_state = std::get<int>(stack.back());
+                auto goto_it = goto_table.find({prev_state, lhs});
+                if (goto_it == goto_table.end()) {
+                    actions_log.push_back("ERROR: No GOTO for state " + std::to_string(prev_state) + ", non-terminal '" + lhs + "'");
+                    return {false, nullptr, actions_log};
+                }
+
+                stack.push_back(lhs);
+                stack.push_back(goto_it->second);
+            }
+            else if (entry.type == ActionType.ACCEPT) {
+                actions_log.push_back("ACCEPT");
+                auto root = std::make_shared<ParseTreeNode>("S", std::vector<std::shared_ptr<ParseTreeNode>>{
+                    std::make_shared<ParseTreeNode>("input")
+                });
+                return {true, root, actions_log};
+            }
+            else {
+                return {false, nullptr, actions_log};
+            }
+        }
+    }
+};
+
+/**
+ * Example Factory class to setup the specific arithmetic parser
+ */
+class ShiftReduceParserExample {
+public:
+    static ShiftReduceParser create_example_parser() {
+        ShiftReduceParser parser;
+
+        // Grammar Rules
+        parser.add_rule(1, "E", {"E", "+", "T"});
+        parser.add_rule(2, "E", {"T"});
+        parser.add_rule(3, "T", {"T", "*", "F"});
+        parser.add_rule(4, "T", {"F"});
+        parser.add_rule(5, "F", {"(", "E", ")"});
+        parser.add_rule(6, "F", {"id"});
+
+        // Table initialization (matching the Python logic)
+        // State 0
+        parser.set_action(0, "id", ActionType.SHIFT, 5);
+        parser.set_action(0, "(", ActionType.SHIFT, 4);
+        parser.set_goto(0, "E", 1);
+        parser.set_goto(0, "T", 2);
+        parser.set_goto(0, "F", 3);
+
+        // State 1
+        parser.set_action(1, "+", ActionType.SHIFT, 6);
+        parser.set_action(1, "$", ActionType.ACCEPT);
+
+        // State 2
+        parser.set_action(2, "+", ActionType.REDUCE, 2);
+        parser.set_action(2, "*", ActionType.SHIFT, 7);
+        parser.set_action(2, "$", ActionType.REDUCE, 2);
+        parser.set_action(2, ")", ActionType.REDUCE, 2);
+
+        // State 3
+        parser.set_action(3, "+", ActionType.REDUCE, 4);
+        parser.set_action(3, "*", ActionType.REDUCE, 4);
+        parser.set_action(3, "$", ActionType.REDUCE, 4);
+        parser.set_action(3, ")", ActionType.REDUCE, 4);
+
+        // State 4
+        parser.set_action(4, "id", ActionType.SHIFT, 5);
+        parser.set_action(4, "(", ActionType.SHIFT, 4);
+        parser.set_goto(4, "E", 8);
+        parser.set_goto(4, "T", 2);
+        parser.set_goto(4, "F", 3);
+
+        // State 5
+        parser.set_action(5, "+", ActionType.REDUCE, 6);
+        parser.set_action(5, "*", ActionType.REDUCE, 6);
+        parser.set_action(5, "$", ActionType.REDUCE, 6);
+        parser.set_action(5, ")", ActionType.REDUCE, 6);
+
+        // State 6
+        parser.set_action(6, "id", ActionType.SHIFT, 5);
+        parser.set_action(6, "(", ActionType.SHIFT, 4);
+        parser.set_goto(6, "T", 9);
+        parser.set_goto(6, "F", 3);
+
+        // State 7
+        parser.set_action(7, "id", ActionType.SHIFT, 5);
+        parser.set_action(7, "(", ActionType.SHIFT, 4);
+        parser.set_goto(7, "F", 10);
+
+        // State 8
+        parser.set_action(8, "+", ActionType.SHIFT, 6);
+        parser.set_action(8, ")", ActionType.SHIFT, 11);
+
+        // State 9
+        parser.set_action(9, "+", ActionType.REDUCE, 1);
+        parser.set_action(9, "*", ActionType.SHIFT, 7);
+        parser.set_action(9, "$", ActionType.REDUCE, 1);
+        parser.set_action(9, ")", ActionType.REDUCE, 1);
+
+        // State 10
+        parser.set_action(10, "+", ActionType.REDUCE, 3);
+        parser.set_action(10, "*", ActionType.REDUCE, 3);
+        parser.set_action(10, "$", ActionType.REDUCE, 3);
+        parser.set_action(10, ")", ActionType.REDUCE, 3);
+
+        // State 11
+        parser.set_action(11, "+", ActionType.REDUCE, 5);
+        parser.set_action(11, "*", ActionType.REDUCE, 5);
+        parser.set_action(11, "$", ActionType.REDUCE, 5);
+        parser.set_action(11, ")", ActionType.REDUCE, 5);
+
+        return parser;
+    }
+};
+
+#endif // SHIFT_REDUCE_PARSER_HPP
