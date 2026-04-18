@@ -1,0 +1,135 @@
+#ifndef STORAGE_ALLOCATOR_HPP
+#define STORAGE_ALLOCATOR_HPP
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <map>
+#include <set>
+#include <memory>
+#include <iomanip>
+
+/**
+ * Storage classes for variables
+ */
+enum class StorageClass {
+    STATIC,   // Global/Static memory
+    AUTO,     // Stack allocation
+    REGISTER  // CPU Register allocation
+};
+
+/**
+ * Metadata for a program variable
+ */
+struct Variable {
+    std::string name;
+    std::string type_name;
+    StorageClass storage_class;
+    int size;
+    int offset = -1; // Offset from FP for Stack, or absolute address for Static
+    std::string reg = ""; // Register name if applicable
+};
+
+/**
+ * Represents the activation record for a specific function
+ */
+struct StackFrame {
+    std::string function_name;
+    std::map<std::string, Variable> variables;
+    int local_offset = 0;
+
+    StackFrame(std::string name) : function_name(name) {}
+};
+
+/**
+ * Manages the allocation of memory across stack, static, and registers
+ */
+class StackAllocator {
+private:
+    std::map<std::string, std::shared_ptr<StackFrame>> stack_frames;
+    std::shared_ptr<StackFrame> current_frame = nullptr;
+    std::vector<std::string> call_stack;
+    
+    std::map<std::string, int> static_storage;
+    int static_counter = 0x400000; // Base address for static data
+
+    std::vector<std::string> register_pool = {"EAX", "EBX", "ECX", "EDX", "ESI", "EDI"};
+
+    // Alignment helper
+    int align(int offset, int alignment = 8) {
+        int remainder = offset % alignment;
+        return (remainder == 0) ? offset : offset + (alignment - remainder);
+    }
+
+public:
+    void enter_frame(std::string function_name) {
+        if (stack_frames.find(function_name) == stack_frames.end()) {
+            stack_frames[function_name] = std::make_shared<StackFrame>(function_name);
+        }
+        current_frame = stack_frames[function_name];
+        call_stack.push_back(function_name);
+    }
+
+    void leave_frame() {
+        if (!call_stack.empty()) {
+            call_stack.pop_back();
+            if (!call_stack.empty()) {
+                current_frame = stack_frames[call_stack.back()];
+            } else {
+                current_frame = nullptr;
+            }
+        }
+    }
+
+    Variable& allocate_local(std::string name, std::string type, int size) {
+        if (!current_frame) throw std::runtime_error("No active stack frame");
+
+        current_frame->local_offset = align(current_frame->local_offset);
+        
+        Variable var;
+        var.name = name;
+        var.type_name = type;
+        var.storage_class = StorageClass::AUTO;
+        var.size = size;
+        var.offset = -(current_frame->local_offset + size); // Stack grows downward
+        
+        current_frame->local_offset += size;
+        current_frame->variables[name] = var;
+        return current_frame->variables[name];
+    }
+
+    Variable& allocate_static(std::string name, std::string type, int size) {
+        Variable var;
+        var.name = name;
+        var.type_name = type;
+        var.storage_class = StorageClass::STATIC;
+        var.size = size;
+        var.offset = static_counter;
+        
+        static_storage[name] = static_counter;
+        static_counter += size;
+        
+        if (current_frame) current_frame->variables[name] = var;
+        return current_frame->variables[name];
+    }
+
+    void print_layout(std::string func_name) {
+        if (stack_frames.find(func_name) == stack_frames.end()) return;
+        auto frame = stack_frames[func_name];
+
+        std::cout << "\nSTACK LAYOUT: " << func_name << "\n";
+        std::cout << std::string(40, '-') << "\n";
+        std::cout << "| Return Address         | [FP + 8]\n";
+        std::cout << "| Saved Frame Pointer    | [FP + 0]\n";
+        std::cout << std::string(40, '-') << "\n";
+
+        for (auto const& [name, var] : frame->variables) {
+            if (var.storage_class == StorageClass::AUTO) {
+                std::printf("| %-22s | [FP %d]\n", name.c_str(), var.offset);
+            }
+        }
+        std::cout << std::string(40, '-') << "\n";
+    }
+};
+
+#endif
