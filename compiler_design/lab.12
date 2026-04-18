@@ -1,0 +1,160 @@
+#ifndef CODE_GENERATOR_HPP
+#define CODE_GENERATOR_HPP
+
+#include <iostream>
+#include <vector>
+#include <string>
+#include <map>
+#include <algorithm>
+#include <optional>
+
+/**
+ * Virtual Registers for the target machine
+ */
+enum class Register { EAX, EBX, ECX, EDX, NONE };
+
+inline std::string reg_to_string(Register reg) {
+    switch (reg) {
+        case Register::EAX: return "EAX";
+        case Register::EBX: return "EBX";
+        case Register::ECX: return "ECX";
+        case Register::EDX: return "EDX";
+        default: return "NONE";
+    }
+}
+
+/**
+ * Assembly Instruction Representation
+ */
+struct Instruction {
+    std::string op;
+    std::string operand1;
+    std::string operand2;
+
+    std::string toString() const {
+        if (!operand2.empty()) return op + " " + operand1 + ", " + operand2;
+        if (!operand1.empty()) return op + " " + operand1;
+        return op;
+    }
+};
+
+/**
+ * Manages virtual register allocation and mapping
+ */
+class RegisterAllocator {
+private:
+    std::vector<Register> free_registers = { Register::EAX, Register::EBX, Register::ECX, Register::EDX };
+    std::map<std::string, Register> var_to_reg;
+    std::map<Register, std::string> reg_to_var;
+
+public:
+    Register allocate(const std::string& var) {
+        if (var_to_reg.count(var)) return var_to_reg[var];
+
+        if (!free_registers.empty()) {
+            Register reg = free_registers.back();
+            free_registers.pop_back();
+            var_to_reg[var] = reg;
+            reg_to_var[reg] = var;
+            return reg;
+        }
+        return Register::NONE; // Spill needed
+    }
+
+    void free_var(const std::string& var) {
+        if (var_to_reg.count(var)) {
+            Register reg = var_to_reg[var];
+            var_to_reg.erase(var);
+            reg_to_var.erase(reg);
+            free_registers.push_back(reg);
+        }
+    }
+
+    std::string get_location(const std::string& var) {
+        if (std::isdigit(var[0])) return var; // It's a literal constant
+        if (var_to_reg.count(var)) return reg_to_string(var_to_reg[var]);
+        return "[ebp - var]"; // Simplified memory location
+    }
+};
+
+/**
+ * Generates assembly mnemonics from Quadruples
+ */
+class CodeGenerator {
+private:
+    std::vector<Instruction> instructions;
+    RegisterAllocator allocator;
+    std::map<std::string, int> memory_map;
+    int memory_offset = 0;
+
+public:
+    void emit(std::string op, std::string o1 = "", std::string o2 = "") {
+        instructions.push_back({op, o1, o2});
+    }
+
+    void generate_prologue() {
+        emit("PUSH", "EBP");
+        emit("MOV", "EBP", "ESP");
+    }
+
+    void generate_epilogue() {
+        emit("MOV", "ESP", "EBP");
+        emit("POP", "EBP");
+        emit("RET");
+    }
+
+    void generate_add(std::string left, std::string right, std::string res) {
+        std::string l_loc = allocator.get_location(left);
+        std::string r_loc = allocator.get_location(right);
+        Register res_reg = allocator.allocate(res);
+        
+        emit("MOV", reg_to_string(res_reg), l_loc);
+        emit("ADD", reg_to_string(res_reg), r_loc);
+    }
+
+    void generate_mul(std::string left, std::string right, std::string res) {
+        // x86 MUL typically uses EAX
+        emit("MOV", "EAX", allocator.get_location(left));
+        emit("MOV", "EBX", allocator.get_location(right));
+        emit("MUL", "EBX");
+        Register res_reg = allocator.allocate(res);
+        emit("MOV", reg_to_string(res_reg), "EAX");
+    }
+
+    void generate_assignment(std::string var, std::string val) {
+        std::string val_loc = allocator.get_location(val);
+        Register var_reg = allocator.allocate(var);
+        emit("MOV", reg_to_string(var_reg), val_loc);
+    }
+
+    void print_assembly() {
+        std::cout << "\nGENERATED ASSEMBLY CODE\n" << std::string(30, '=') << "\n";
+        for (size_t i = 0; i < instructions.size(); ++i) {
+            std::printf("  %2zu: %s\n", i, instructions[i].toString().c_str());
+        }
+    }
+};
+
+/**
+ * Driver to process a list of Quadruples
+ */
+struct Quad { std::string op, arg1, arg2, result; };
+
+class AssemblyConverter {
+public:
+    static void convert(const std::vector<Quad>& quads) {
+        CodeGenerator gen;
+        gen.generate_prologue();
+
+        for (const auto& q : quads) {
+            if (q.op == "+") gen.generate_add(q.arg1, q.arg2, q.result);
+            else if (q.op == "*") gen.generate_mul(q.arg1, q.arg2, q.result);
+            else if (q.op == "=") gen.generate_assignment(q.result, q.arg1);
+        }
+
+        gen.generate_epilogue();
+        gen.print_assembly();
+    }
+};
+
+#endif
